@@ -69,17 +69,26 @@ func (p *Pod) Status() *protoapi.PodStatus {
 	return p.pod().Status
 }
 
-// Pod lazy initializes p from the imported host function imports.Pod.
+var (
+	// currentPod is updated when its currentPodID changes.
+	currentPod   protoapi.Pod
+	currentPodID uint32
+)
+
+func updatePod(currentID uint32, bytes []byte) error {
+	currentPodID = currentID
+	return currentPod.UnmarshalVT(bytes)
+}
+
+// Pod lazy updates p if it was nil or different from the last call.
 func (p *Pod) pod() *protoapi.Pod {
 	if pod := p.p; pod != nil {
 		return pod
 	}
 
-	b := imports.Pod()
-	var msg protoapi.Pod
-	if err := msg.UnmarshalVT(b); err != nil {
+	if err := imports.ConditionallyUpdatePod(currentPodID, updatePod); err != nil {
 		panic(err.Error())
 	}
-	p.p = &msg
+	p.p = &currentPod
 	return p.p
 }

@@ -59,9 +59,11 @@ func NodeInfoNode() []byte {
 	})
 }
 
-func Pod() []byte {
+// ConditionallyUpdatePod conditionally updates the current pod if its ID
+// doesn't equal the input.
+func ConditionallyUpdatePod(id uint32, podUpdater func(currentID uint32, bytes []byte) error) error {
 	// Wrap to avoid TinyGo 0.27: cannot use an exported function as value
-	return getBytes(func(ptr uint32, limit bufLimit) (len uint32) {
-		return k8sApiPod(ptr, limit)
-	})
+	return conditionallyUpdate(id, func(id, ptr uint32, limit bufLimit) (idLen uint64) {
+		return k8sApiPod(id, ptr, limit)
+	}, podUpdater)
 }

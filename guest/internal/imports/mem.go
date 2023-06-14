@@ -63,6 +63,46 @@ func getBytes(fn func(ptr uint32, limit bufLimit) (len uint32)) []byte {
 	return buf
 }
 
+// conditionalBytesReader reads bytes into memory up to the given limit, if the
+// ID is out-of-date.
+//
+// The etagLen result includes the real etag and the length of its data, as two
+// uint32 values packed into a single uint64. When the length is larger than
+// bufLimit, the function must be re-tried with a larger one.
+type conditionalBytesReader func(id, ptr uint32, limit bufLimit) (idLen uint64)
+
+// unmarshal invokes `conditionalBytesReader` with the given ID. If the
+// resulting ID is the same, it returns nil. Otherwise, it runs the updater
+// and returns any error that may have occurred.
+func conditionallyUpdate(
+	id uint32,
+	conditionalBytesReader conditionalBytesReader,
+	updater func(newID uint32, bytes []byte) error,
+) error {
+	// Call the function that reads bytes if the ID is different.
+	idLen := conditionalBytesReader(id, uint32(readBufPtr), readBufLimit)
+	currentID := uint32(idLen >> 32)
+
+	// If the current ID is the same as input, we shouldn't decode.
+	if id == currentID {
+		return nil
+	}
+
+	// If the size in bytes to update is larger than our read buffer, retry
+	// using the out-of-date ID, so that the host updates the memory.
+	var buf []byte
+	if size := uint32(idLen); size > readBufLimit {
+		buf = make([]byte, size)
+		ptr := uintptr(unsafe.Pointer(&buf[0]))
+		_ = conditionalBytesReader(id, uint32(ptr), size)
+	} else { // re-slice the buffer to size.
+		buf = readBuf[:size]
+	}
+
+	// Pass the current ID to the updater along with the new raw bytes.
+	return updater(currentID, buf)
+}
+
 func getString(fn func(ptr uint32, limit bufLimit) (len uint32)) string {
 	size := fn(uint32(readBufPtr), readBufLimit)
 	if size == 0 {
@@ -79,5 +119,7 @@ func getString(fn func(ptr uint32, limit bufLimit) (len uint32)) string {
 	buf := make([]byte, size)
 	ptr := unsafe.Pointer(&buf[0])
 	_ = fn(uint32(uintptr(ptr)), size)
+
+	// TODO: track https://github.com/tinygo-org/tinygo/issues/3789
 	return unsafe.String((*byte)(ptr), size /* unsafe.IntegerType */)
 }

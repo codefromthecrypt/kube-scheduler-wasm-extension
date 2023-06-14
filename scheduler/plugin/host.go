@@ -18,6 +18,7 @@ package wasm
 
 import (
 	"context"
+	"unsafe"
 
 	"github.com/tetratelabs/wazero"
 	wazeroapi "github.com/tetratelabs/wazero/api"
@@ -39,13 +40,13 @@ func instantiateHostApi(ctx context.Context, runtime wazero.Runtime) (wazeroapi.
 	return runtime.NewHostModuleBuilder(k8sApi).
 		NewFunctionBuilder().
 		WithGoModuleFunction(wazeroapi.GoModuleFunc(k8sApiNodeInfoNodeFn), []wazeroapi.ValueType{i32, i32}, []wazeroapi.ValueType{i32}).
-		WithParameterNames("buf", "buf_limit").Export(k8sApiNodeInfoNode).
+		WithParameterNames("buf", "buf_limit").WithResultNames("len").Export(k8sApiNodeInfoNode).
 		NewFunctionBuilder().
 		WithGoModuleFunction(wazeroapi.GoModuleFunc(k8sApiNodeNameFn), []wazeroapi.ValueType{i32, i32}, []wazeroapi.ValueType{i32}).
-		WithParameterNames("buf", "buf_limit").Export(k8sApiNodeName).
+		WithParameterNames("buf", "buf_limit").WithResultNames("len").Export(k8sApiNodeName).
 		NewFunctionBuilder().
-		WithGoModuleFunction(wazeroapi.GoModuleFunc(k8sApiPodFn), []wazeroapi.ValueType{i32, i32}, []wazeroapi.ValueType{i32}).
-		WithParameterNames("buf", "buf_limit").Export(k8sApiPod).
+		WithGoModuleFunction(wazeroapi.GoModuleFunc(k8sApiPodFn), []wazeroapi.ValueType{i32, i32, i32}, []wazeroapi.ValueType{i64}).
+		WithParameterNames("id", "buf", "buf_limit").WithResultNames("id_len").Export(k8sApiPod).
 		Instantiate(ctx)
 }
 
@@ -102,11 +103,32 @@ func k8sApiNodeNameFn(ctx context.Context, mod wazeroapi.Module, stack []uint64)
 }
 
 func k8sApiPodFn(ctx context.Context, mod wazeroapi.Module, stack []uint64) {
-	buf := uint32(stack[0])
-	bufLimit := bufLimit(stack[1])
+	id := uint32(stack[0])
+	buf := uint32(stack[1])
+	bufLimit := bufLimit(stack[2])
 
 	pod := paramsFromContext(ctx).pod
-	stack[0] = uint64(marshalIfUnderLimit(mod.Memory(), pod, buf, bufLimit))
+	cycleID := cycleID(pod)
+
+	if id == cycleID {
+		stack[0] = uint64(cycleID) << 32
+	}
+
+	stack[0] = uint64(cycleID)<<32 | uint64(marshalIfUnderLimit(mod.Memory(), pod, buf, bufLimit))
+}
+
+// cycleID is stable through a scheduling cycle, and will be different when the
+// same pod is rescheduled due to an error. The cycleID is not derived from the
+// v1.Pod UID for this reason.
+//
+// We use the last 32-bits of the pod's pointer as its ID, as the struct is
+// re-instantiated each scheduling cycle, but the same object is used for each
+// callback within one.
+// See https://github.com/kubernetes/kubernetes/blob/9740bc0e0a10aad753cf7fcbed0c7be25ab200dd/pkg/scheduler/schedule_one.go#L133
+func cycleID(pod *v1.Pod) uint32 {
+	podPtr := uintptr(unsafe.Pointer(pod))
+	currentId := uint32(podPtr)
+	return currentId
 }
 
 // k8sSchedulerStatusReasonFn is a function used by the wasm guest to set the
